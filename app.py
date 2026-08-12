@@ -20,19 +20,19 @@ from langserve import add_routes
 
 
 # ============================================================
-# 1. LLM
+# 1. LLM INITIALIZATION
 # ============================================================
 
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GOOGLEAPI = os.environ.get("GOOGLEAPI")
 
-if not GOOGLE_API_KEY:
+if not GOOGLEAPI:
     raise ValueError(
-        "GOOGLE_API_KEY environment variable is not set."
+        "GOOGLEAPI environment variable is not set."
     )
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite-preview",
-    google_api_key=GOOGLE_API_KEY,
+    google_api_key=GOOGLEAPI,
     temperature=0
 )
 
@@ -53,7 +53,7 @@ class CrewState(TypedDict, total=False):
 
 
 # ============================================================
-# 3. RUN PYTHON CODE
+# 3. TOOL: RUN PYTHON CODE
 # ============================================================
 
 @tool
@@ -65,7 +65,7 @@ def run_python_code(code: str) -> str:
     if not isinstance(code, str):
         code = str(code)
 
-    # Remove markdown code blocks
+    # Remove Markdown code fences if Gemini returns them
     clean_code = re.sub(
         r"```python\s*",
         "",
@@ -114,35 +114,31 @@ def run_python_code(code: str) -> str:
 
 
 # ============================================================
-# 4. TEST CASE GENERATOR
+# 4. TOOL: GENERATE TEST CASES
 # ============================================================
 
 @tool
 def generate_test_cases(task_description: str) -> str:
     """
-    Generate 3 to 5 QA test scenarios.
+    Generate 3 to 5 QA test scenarios for the coding task.
     """
 
-    prompt = f"""
-You are a Senior QA Engineer.
-
-Generate 3 to 5 specific test scenarios for this coding task:
-
-{task_description}
-
-Include:
-1. Normal cases
-2. Boundary cases
-3. Edge cases
-4. Invalid cases when appropriate
-
-For every test case include:
-- Input
-- Expected output
-
-Return a numbered list.
-Keep it concise.
-"""
+    prompt = (
+        "You are a Senior QA Engineer.\n\n"
+        "Generate 3 to 5 specific test scenarios for this "
+        "coding task:\n\n"
+        + task_description
+        + "\n\n"
+        "Include:\n"
+        "1. Normal cases\n"
+        "2. Boundary cases\n"
+        "3. Edge cases\n"
+        "4. Invalid cases when appropriate\n\n"
+        "For every test case include:\n"
+        "- Input\n"
+        "- Expected output\n\n"
+        "Return a numbered list and keep it concise."
+    )
 
     response = llm.invoke(prompt)
 
@@ -160,26 +156,24 @@ def developer_node(state: CrewState):
 
     task = state["task"]
 
-    print("\n[Developer] Generating code...")
+    print("\n[Developer] Generating Python code...")
 
-    prompt = f"""
-You are a Python developer.
-
-Solve this coding task:
-
-{task}
-
-Rules:
-
-- Return ONLY Python code.
-- Do not use markdown.
-- Do not use ```python.
-- Do NOT use input().
-- Do NOT ask the user for input.
-- Put the required sample data directly inside the program.
-- Print the final result.
-- Keep the program simple and clean.
-"""
+    prompt = (
+        "You are a Python developer.\n\n"
+        "Solve this coding task:\n\n"
+        + task
+        + "\n\n"
+        "Rules:\n"
+        "- Return ONLY Python code.\n"
+        "- Do not return explanations.\n"
+        "- Do not use Markdown.\n"
+        "- Do not use ```python.\n"
+        "- Do NOT use input().\n"
+        "- Do NOT ask the user for input.\n"
+        "- Put all required sample data directly inside the program.\n"
+        "- Print the final result.\n"
+        "- Keep the program simple and clean."
+    )
 
     response = llm.invoke(prompt)
 
@@ -212,7 +206,7 @@ Rules:
 
         code = str(content)
 
-    # Remove markdown fences
+    # Remove Markdown code fences
     code = re.sub(
         r"```python\s*",
         "",
@@ -222,6 +216,7 @@ Rules:
 
     code = code.replace("```", "").strip()
 
+    print("\nGenerated Code:")
     print(code)
 
     return {
@@ -266,12 +261,7 @@ def tester_node(state: CrewState):
         }
     )
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Use normal string concatenation instead of a multiline
-    # f-string to avoid syntax errors.
-    # --------------------------------------------------------
-
+    # Build report without triple-quoted f-strings
     report = (
         "### CODING TASK\n\n"
         + task
@@ -285,6 +275,8 @@ def tester_node(state: CrewState):
         + "### TEST SCENARIOS\n\n"
         + cases
     )
+
+    print("\n[Tester] Testing completed.")
 
     return {
         "test_cases": cases,
@@ -307,7 +299,8 @@ def manager_node(state: CrewState):
     decision = decision.lower().strip()
 
     print(
-        f"\n[Manager] Decision: {decision}"
+        "\n[Manager] Decision: "
+        + decision
     )
 
     if decision == "store":
@@ -344,6 +337,7 @@ def archiver_node(state: CrewState):
 workflow = StateGraph(CrewState)
 
 
+# Add nodes
 workflow.add_node(
     "developer",
     developer_node
@@ -366,7 +360,6 @@ workflow.add_node(
 
 
 # START → Developer
-
 workflow.add_edge(
     START,
     "developer"
@@ -374,7 +367,6 @@ workflow.add_edge(
 
 
 # Developer → Tester
-
 workflow.add_edge(
     "developer",
     "tester"
@@ -382,7 +374,6 @@ workflow.add_edge(
 
 
 # Tester → Manager
-
 workflow.add_edge(
     "tester",
     "manager"
@@ -396,7 +387,6 @@ workflow.add_edge(
 def route_manager(state: CrewState):
 
     if state.get("next_step") == "archiver":
-
         return "archiver"
 
     return END
@@ -409,17 +399,14 @@ workflow.add_conditional_edges(
 
 
 # Archiver → END
-
 workflow.add_edge(
     "archiver",
     END
 )
 
 
-# Compile
-
+# Compile graph
 graph_app = workflow.compile()
-
 
 print(
     "LangGraph workflow compiled successfully."
@@ -427,7 +414,7 @@ print(
 
 
 # ============================================================
-# 10. API INPUT
+# 10. API INPUT SCHEMA
 # ============================================================
 
 class CareerWorkflowInput(BaseModel):
@@ -442,11 +429,14 @@ class CareerWorkflowInput(BaseModel):
     decision: str = Field(
         default="store",
         description=(
-            "Manager decision: "
-            "store or another."
+            "Manager decision: store or another."
         )
     )
 
+
+# ============================================================
+# 11. API OUTPUT SCHEMA
+# ============================================================
 
 class CareerWorkflowOutput(BaseModel):
 
@@ -460,7 +450,7 @@ class CareerWorkflowOutput(BaseModel):
 
 
 # ============================================================
-# 11. RUN LANGGRAPH
+# 12. RUN LANGGRAPH WORKFLOW
 # ============================================================
 
 def run_career_workflow(
@@ -545,7 +535,7 @@ def run_career_workflow(
 
 
 # ============================================================
-# 12. LANGSERVE CHAIN
+# 13. LANGSERVE CHAIN
 # ============================================================
 
 career_chain = (
@@ -560,7 +550,7 @@ career_chain = (
 
 
 # ============================================================
-# 13. FASTAPI
+# 14. FASTAPI APPLICATION
 # ============================================================
 
 app = FastAPI(
@@ -576,17 +566,22 @@ add_routes(
 )
 
 
+# ============================================================
+# 15. HOME ROUTE
+# ============================================================
+
 @app.get("/")
 def home():
 
     return {
         "message": "LangGraph AI Coding Agent is running",
-        "playground": "/career-agent/playground/"
+        "playground": "/career-agent/playground/",
+        "docs": "/docs"
     }
 
 
 # ============================================================
-# 14. SERVER
+# 16. START SERVER
 # ============================================================
 
 if __name__ == "__main__":
